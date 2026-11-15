@@ -29,6 +29,10 @@ jobs:
     defaults:
       run:
         shell: bash -el {0}
+    env:
+      # No GPU driver on the runner, so conda has no __cuda virtual package and
+      # refuses conda-forge's CUDA pytorch without this.
+      CONDA_OVERRIDE_CUDA: ${{ matrix.cuda }}
     steps:
       - uses: actions/checkout@v4
         with:
