@@ -1,0 +1,106 @@
+# Linux wheels built against conda-forge's PyTorch, for envs like gs-train
+# (conda-forge python + pytorch + cuda-version). Attached to a GitHub release,
+# which unlike an artifact does not expire.
+#
+# Archs: 8.6 (RTX 3060, A10), 8.9 (L40S, L4), 12.0 (RTX 5050 / 5060).
+name: Conda wheels
+
+on:
+  push:
+    branches: [wheels-c3d59bb]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TORCH_CUDA_ARCH_LIST: "8.6;8.9;12.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { python: "3.14", torch: "2.13.0", cuda: "13.0", build: "cuda130", tag: "pt213cu130" }
+          - { python: "3.14", torch: "2.14.1", cuda: "13.4", build: "cuda134", tag: "pt2141cu134" }
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          python-version: ${{ matrix.python }}
+          conda-remove-defaults: true
+          channels: conda-forge
+          activate-environment: build
+
+      - name: Install conda-forge PyTorch ${{ matrix.torch }} + CUDA ${{ matrix.cuda }}
+        run: |
+          conda install -y \
+            "pytorch=${{ matrix.torch }}=${{ matrix.build }}*" \
+            "cuda-version=${{ matrix.cuda }}" \
+            cuda-nvcc cuda-cudart-dev cuda-driver-dev \
+            libcusparse-dev libcublas-dev libcusolver-dev \
+            ninja pip "setuptools>=42" wheel numpy rich
+          python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
+          nvcc --version
+          df -h /
+
+      - name: Set version
+        run: |
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' gsplat/version.py)
+          sed -i "s/$VERSION/$VERSION+${{ matrix.tag }}/" gsplat/version.py
+          grep __version__ gsplat/version.py
+
+      - name: Build wheel
+        run: |
+          export CUDA_HOME="$CONDA_PREFIX" MAX_JOBS=3
+          pip wheel . --no-build-isolation --no-deps -v -w dist
+
+      - name: Test wheel
+        run: |
+          ls -lah dist
+          pip install dist/*.whl
+          cd /tmp && python -c "import gsplat, gsplat.csrc; print('gsplat', gsplat.__version__)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.tag }}
+          path: dist/*.whl
+          retention-days: 7
+
+  release:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+      - run: ls -lah dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.6.0-c3d59bb
+          name: gsplat 1.6.0 (c3d59bb), conda-forge PyTorch wheels
+          target_commitish: ${{ github.sha }}
+          body: |
+            Unofficial Linux wheels of upstream commit c3d59bb (the 1.6.0 release
+            attempt), built against conda-forge's PyTorch. Archs: ${{ env.TORCH_CUDA_ARCH_LIST }}.
+            Install only into an env with the same Python, PyTorch minor and CUDA major.
+          files: dist/*.whl
+          fail_on_unmatched_files: true
