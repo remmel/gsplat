@@ -9,6 +9,11 @@ on:
   push:
     branches: [wheels-c3d59bb]
   workflow_dispatch:
+    inputs:
+      rows:
+        description: 'JSON list of matrix rows to build (empty: all), e.g. [{"python":"3.14","torch":"2.14.1","cuda":"13.4","build":"cuda134","tag":"pt2141cu134"}]'
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -23,9 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { python: "3.14", torch: "2.13.0", cuda: "13.0", build: "cuda130", tag: "pt213cu130" }
-          - { python: "3.14", torch: "2.14.1", cuda: "13.4", build: "cuda134", tag: "pt2141cu134" }
+        include: ${{ fromJSON(inputs.rows || '[{"python":"3.14","torch":"2.13.0","cuda":"13.0","build":"cuda130","tag":"pt213cu130"},{"python":"3.14","torch":"2.14.1","cuda":"13.4","build":"cuda134","tag":"pt2141cu134"}]') }}
     defaults:
       run:
         shell: bash -el {0}
@@ -42,6 +45,15 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
+
+      # CUDA 13.4's nvcc on the largest kernel file starved the runner
+      # ("lost communication") at MAX_JOBS=3 with no swap; CUDA 13.0 passed.
+      - name: Add swap
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/swapfile && sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile && sudo swapon /mnt/swapfile
+          free -h
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
@@ -71,7 +83,7 @@ jobs:
 
       - name: Build wheel
         run: |
-          export CUDA_HOME="$CONDA_PREFIX" MAX_JOBS=3
+          export CUDA_HOME="$CONDA_PREFIX" MAX_JOBS=2
           pip wheel . --no-build-isolation --no-deps -v -w dist
 
       - name: Test wheel
